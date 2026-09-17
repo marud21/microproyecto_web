@@ -71,10 +71,11 @@ def _ejecutar_fase(data, funcion_fase):
 
     Se devuelven TODOS los pasos generados durante la llamada (campo
     "pasos", como lista) y no solo el ultimo: fases como nulas y
-    unitarias ahora registran un paso de historial POR CADA VARIABLE
+    unitarias, ahora registran un paso de historial POR CADA VARIABLE
     procesada (ver depuracion.py), y el frontend (App.jsx) ya sabe
     tomar una lista de pasos y etiquetar el Sigma de cada uno en
     orden.
+    Listo.
     """
     gramatica = gramatica_desde_json(data)
 
