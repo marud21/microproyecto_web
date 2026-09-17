@@ -239,65 +239,115 @@ def _generar_combinaciones_sin_anulables(produccion, posiciones_anulables):
 
 def eliminar_producciones_nulas(gramatica, historial=None):
     """
-    Elimina las producciones nulas, generando las combinaciones
-    necesarias de producciones donde se omite cada variable anulable.
+    Elimina las producciones nulas, UNA VARIABLE ANULABLE A LA VEZ
+    (no todas de un solo golpe). Por cada variable con produccion
+    lambda directa se registra un PASO independiente de historial:
 
-    La produccion nula se elimina de TODAS las variables sin
-    excepcion, incluida la variable inicial (no se conserva
-    "S -> lambda" como caso especial).
+        1. Se elimina esa lambda (variable -> λ) de una vez, en el
+           mismo paso (no se deja para un paso de "limpieza" final).
+        2. Se propaga su desaparicion a TODAS las producciones de
+           TODA la gramatica que la contengan (incluidas las de la
+           propia variable), generando las combinaciones necesarias
+           y evitando duplicados.
+
+    Si al propagar, alguna OTRA variable queda con una nueva
+    produccion vacia (una variable que se volvio anulable de forma
+    indirecta, ej. D -> A y A se anula => D tambien se anula), esa
+    variable se encola para procesarse en un paso posterior (nunca en
+    el mismo paso).
+
+    El orden de procesamiento es el orden de aparicion de las
+    variables en la gramatica; las que se descubren indirectamente se
+    procesan despues de las que ya estaban en cola.
     """
-    gramatica_antes = gramatica.copia()
     nueva = gramatica.copia()
 
-    anulables = obtener_variables_anulables(nueva)
+    procesadas = set()
+    pendientes = [
+        v for v in nueva.producciones if nueva.NULA in nueva.producciones[v]
+    ]
 
-    producciones_eliminadas = []
-    producciones_agregadas = []
+    while pendientes:
+        variable = pendientes.pop(0)
+        if variable in procesadas:
+            continue
+        if nueva.NULA not in nueva.producciones.get(variable, []):
+            continue
+        procesadas.add(variable)
 
-    nuevas_producciones = {}
-    for variable, lista_producciones in nueva.producciones.items():
-        nuevas_de_variable = []
-        for produccion in lista_producciones:
-            if produccion == nueva.NULA:
-                producciones_eliminadas.append(f"{variable} -> λ")
-                continue
+        gramatica_antes = nueva.copia()
 
-            posiciones_anulables = [
-                i for i, s in enumerate(produccion) if s in anulables
-            ]
+        # 1. Se quita la lambda propia de 'variable' de una vez.
+        nueva.producciones[variable] = [
+            p for p in nueva.producciones[variable] if p != nueva.NULA
+        ]
 
-            if not posiciones_anulables:
-                if produccion not in nuevas_de_variable:
-                    nuevas_de_variable.append(produccion)
-                continue
+        producciones_eliminadas = [f"{variable} -> λ"]
+        producciones_agregadas = []
+        nuevos_pendientes = []
 
-            variantes = _generar_combinaciones_sin_anulables(
-                produccion, posiciones_anulables
-            )
+        # 2. Se propaga la desaparicion de 'variable' a TODA la
+        #    gramatica (incluida ella misma).
+        nuevas_producciones = {}
+        for var_afectada, lista in nueva.producciones.items():
+            original = set(lista)
+            nuevas_de_var = []
 
-            for variante in variantes:
-                if variante == ():
+            for produccion in lista:
+                if variable not in produccion:
+                    if produccion not in nuevas_de_var:
+                        nuevas_de_var.append(produccion)
                     continue
-                if variante not in nuevas_de_variable:
-                    nuevas_de_variable.append(variante)
-                    if variante != produccion:
-                        producciones_agregadas.append(
-                            f"{variable} -> {formatear_produccion(variante)}"
-                        )
 
-        nuevas_producciones[variable] = nuevas_de_variable
+                posiciones = [i for i, s in enumerate(produccion) if s == variable]
+                variantes = _generar_combinaciones_sin_anulables(produccion, posiciones)
 
-    nueva.producciones = nuevas_producciones
+                for variante in variantes:
+                    if variante == nueva.NULA and var_afectada == variable:
+                        # Una autoproduccion remanente (ej. "C -> C",
+                        # creada en un paso anterior) NO puede
+                        # regenerar la lambda propia de 'variable'
+                        # dentro de su propio paso: esa lambda ya se
+                        # elimino explicitamente arriba.
+                        continue
+                    if variante not in nuevas_de_var:
+                        nuevas_de_var.append(variante)
 
-    if historial is not None:
-        historial.registrar(
-            fase="Eliminacion de producciones nulas",
-            gramatica_antes=gramatica_antes,
-            elementos_identificados=sorted(anulables) if anulables else ["Ninguna"],
-            producciones_eliminadas=producciones_eliminadas,
-            producciones_agregadas=producciones_agregadas,
-            gramatica_despues=nueva.copia(),
-        )
+            # Solo se reporta como "agregada" lo que de verdad es nuevo
+            # respecto a las producciones ORIGINALES de esa variable
+            # (evita marcar como agregada una produccion que ya
+            # existia de antes y que el proceso simplemente volvio a
+            # generar, ej. ABC o BC si A -> ABAC/ABC/BC/... ).
+            for p in nuevas_de_var:
+                if p in original:
+                    continue
+                if p == nueva.NULA:
+                    producciones_agregadas.append(f"{var_afectada} -> λ")
+                    if (
+                        var_afectada not in procesadas
+                        and var_afectada not in pendientes
+                        and var_afectada not in nuevos_pendientes
+                    ):
+                        nuevos_pendientes.append(var_afectada)
+                else:
+                    producciones_agregadas.append(
+                        f"{var_afectada} -> {formatear_produccion(p)}"
+                    )
+
+            nuevas_producciones[var_afectada] = nuevas_de_var
+
+        nueva.producciones = nuevas_producciones
+        pendientes = pendientes + nuevos_pendientes
+
+        if historial is not None:
+            historial.registrar(
+                fase=f"Eliminación de producción nula: {variable} → λ",
+                gramatica_antes=gramatica_antes,
+                elementos_identificados=[variable],
+                producciones_eliminadas=producciones_eliminadas,
+                producciones_agregadas=producciones_agregadas,
+                gramatica_despues=nueva.copia(),
+            )
 
     return nueva
 
@@ -343,22 +393,42 @@ def _cierre_unitario(gramatica, variable):
 
 
 def eliminar_producciones_unitarias(gramatica, historial=None):
-    """Elimina las producciones unitarias usando el cierre unitario de cada variable."""
-    gramatica_antes = gramatica.copia()
+    """
+    Elimina las producciones unitarias usando el cierre unitario de
+    cada variable, UNA VARIABLE DE ORIGEN A LA VEZ (no todas de un
+    solo golpe). Por cada variable que tenga al menos una produccion
+    unitaria directa se registra un PASO independiente de historial.
+
+    Si una misma variable tiene VARIAS producciones unitarias propias
+    (ej. A -> B y A -> C), ambas se resuelven JUNTAS en un solo paso
+    (el cierre unitario de A ya las cubre a las dos de una vez); lo
+    que se hace secuencial, paso a paso, es cada VARIABLE DE ORIGEN
+    distinta, en el orden en que aparecen en la gramatica. Cada paso
+    parte de la gramatica ya actualizada por el paso anterior.
+    """
     nueva = gramatica.copia()
 
-    pares_originales = obtener_pares_unitarios(nueva)
-    producciones_eliminadas = [f"{a} -> {b}" for a, b in pares_originales]
-    producciones_agregadas = []
-
-    nuevas_producciones = {}
     # IMPORTANTE: se itera sobre nueva.producciones (un diccionario,
     # que preserva el orden de insercion original) y NO sobre
     # nueva.variables (un set, cuyo orden de iteracion no esta
-    # garantizado y puede variar entre ejecuciones de Python). Esto
-    # asegura que el orden de las variables se mantenga estable y
-    # coincida con el orden original de la gramatica.
-    for variable in nueva.producciones:
+    # garantizado). Esto asegura que el orden de las variables se
+    # mantenga estable y coincida con el orden original de la
+    # gramatica.
+    orden_variables = list(nueva.producciones.keys())
+
+    for variable in orden_variables:
+        pares_variable = [
+            p for p in nueva.producciones.get(variable, [])
+            if len(p) == 1 and p[0] in nueva.variables
+        ]
+        if not pares_variable:
+            continue  # esta variable no tiene unitarias propias, no genera paso
+
+        gramatica_antes = nueva.copia()
+
+        producciones_eliminadas = [f"{variable} -> {p[0]}" for p in pares_variable]
+        producciones_agregadas = []
+
         cierre = _cierre_unitario(nueva, variable)
         producciones_finales = []
 
@@ -368,10 +438,7 @@ def eliminar_producciones_unitarias(gramatica, historial=None):
                     continue  # se descarta, ya esta representada por el cierre
                 if produccion == nueva.NULA and var_en_cierre != variable:
                     # Una produccion nula NO se propaga a otras variables a
-                    # traves del cierre unitario. No hace falta copiarla:
-                    # si la fase de nulas corre despues, la eliminara de
-                    # todas formas; si corrio antes (orden invertido por
-                    # ciclos), ya no deberia quedar ninguna nula presente.
+                    # traves del cierre unitario.
                     continue
                 if produccion not in producciones_finales:
                     producciones_finales.append(produccion)
@@ -380,21 +447,17 @@ def eliminar_producciones_unitarias(gramatica, historial=None):
                             f"{variable} -> {formatear_produccion(produccion)}"
                         )
 
-        nuevas_producciones[variable] = producciones_finales
+        nueva.producciones[variable] = producciones_finales
 
-    nueva.producciones = nuevas_producciones
-
-    if historial is not None:
-        historial.registrar(
-            fase="Eliminacion de producciones unitarias",
-            gramatica_antes=gramatica_antes,
-            elementos_identificados=(
-                [f"{a} -> {b}" for a, b in pares_originales] if pares_originales else ["Ninguna"]
-            ),
-            producciones_eliminadas=producciones_eliminadas,
-            producciones_agregadas=producciones_agregadas,
-            gramatica_despues=nueva.copia(),
-        )
+        if historial is not None:
+            historial.registrar(
+                fase=f"Eliminación de producción(es) unitaria(s) de {variable}",
+                gramatica_antes=gramatica_antes,
+                elementos_identificados=[f"{variable} -> {p[0]}" for p in pares_variable],
+                producciones_eliminadas=producciones_eliminadas,
+                producciones_agregadas=producciones_agregadas,
+                gramatica_despues=nueva.copia(),
+            )
 
     return nueva
 

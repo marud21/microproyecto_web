@@ -66,7 +66,16 @@ def endpoint_validar():
 
 
 def _ejecutar_fase(data, funcion_fase):
-    """Helper generico: valida, ejecuta una fase y arma la respuesta JSON."""
+    """
+    Helper generico: valida, ejecuta una fase y arma la respuesta JSON.
+
+    Se devuelven TODOS los pasos generados durante la llamada (campo
+    "pasos", como lista) y no solo el ultimo: fases como nulas y
+    unitarias ahora registran un paso de historial POR CADA VARIABLE
+    procesada (ver depuracion.py), y el frontend (App.jsx) ya sabe
+    tomar una lista de pasos y etiquetar el Sigma de cada uno en
+    orden.
+    """
     gramatica = gramatica_desde_json(data)
 
     valida, errores = validar_gramatica(gramatica)
@@ -78,7 +87,7 @@ def _ejecutar_fase(data, funcion_fase):
 
     return jsonify({
         "gramatica": gramatica_a_json(resultado),
-        "paso": paso_a_json(historial.pasos[-1]) if historial.pasos else None,
+        "pasos": historial_a_json(historial),
     })
 
 
